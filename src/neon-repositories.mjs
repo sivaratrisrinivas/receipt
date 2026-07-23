@@ -15,6 +15,22 @@ export function createNeonLedgerReader(ledgerClient) {
 
 export function createNeonReceiptStore(receiptClient) {
   return {
+    async create({ messageReference, refundReference }) {
+      await receiptClient.query(
+        `INSERT INTO receipt.trusted_refund_references (message_reference, refund_reference)
+         VALUES ($1, $2)`,
+        [messageReference, refundReference],
+      );
+    },
+
+    async findByMessageReference(messageReference) {
+      const result = await receiptClient.query(
+        `SELECT refund_reference FROM receipt.trusted_refund_references
+         WHERE message_reference = $1`,
+        [messageReference],
+      );
+      return result.rows[0]?.refund_reference ?? null;
+    },
     async findClaimByMessageReference(messageReference) {
       const result = await receiptClient.query(
         `SELECT id, claim_type AS type, message_reference AS "messageReference",
@@ -27,7 +43,32 @@ export function createNeonReceiptStore(receiptClient) {
       return result.rows[0] ?? null;
     },
 
-    async storePendingClaim({
+    async findDueSchedule(now) {
+      const result = await receiptClient.query(
+        `SELECT schedule.id AS "scheduleId", schedule.kind, claim.id AS "claimId",
+                claim.refund_reference AS "refundReference"
+           FROM receipt.verification_schedule AS schedule
+           JOIN receipt.claims AS claim ON claim.id = schedule.claim_id
+          WHERE schedule.completed_at IS NULL AND schedule.due_at <= $1
+          ORDER BY schedule.due_at`,
+        [now.toISOString()],
+      );
+      return result.rows;
+    },
+
+    async recordScheduledCheck({ scheduleId, claimId, checkedAt, refundState, trigger }) {
+      await receiptClient.query(
+        `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
+         VALUES ($1, $2, $3, $4)`,
+        [claimId, checkedAt, refundState, trigger],
+      );
+      await receiptClient.query(
+        `UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`,
+        [checkedAt, scheduleId],
+      );
+    },
+
+    async storeClaimWithInitialCheckAndSchedule({
       contractVersion,
       claim,
       authoritativeCheck,
@@ -76,9 +117,9 @@ export function createNeonReceiptStore(receiptClient) {
         );
         for (const item of schedule) {
           await receiptClient.query(
-            `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at)
-             VALUES ($1, $2, $3)`,
-            [item.claimId, item.kind, item.dueAt],
+            `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at, completed_at)
+             VALUES ($1, $2, $3, $4)`,
+            [item.claimId, item.kind, item.dueAt, item.completedAt ?? null],
           );
         }
         await receiptClient.query("COMMIT");

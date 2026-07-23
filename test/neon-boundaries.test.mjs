@@ -33,7 +33,7 @@ test("the Receipt adapter stores the Claim and its initial durable work together
     },
   });
 
-  await receipt.storePendingClaim({
+  await receipt.storeClaimWithInitialCheckAndSchedule({
     contractVersion: {
       version: "refund_completed.v1",
       claimType: "refund_completed",
