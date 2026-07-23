@@ -55,7 +55,7 @@ test("a restart reclaims deadline work abandoned by a crashed worker", async () 
   assert.equal(calls[2].verdict, "FALSE_SUCCESS");
 });
 
-test("a later non-successful monitoring read cannot relabel a proven Claim as FALSE_SUCCESS", async () => {
+test("a later non-successful monitoring read reverses a proven Claim without calling it FALSE_SUCCESS", async () => {
   const checks = [];
   const scheduler = createVerificationScheduler({
     clock: () => new Date("2026-07-24T10:05:00.000Z"),
@@ -68,5 +68,5 @@ test("a later non-successful monitoring read cannot relabel a proven Claim as FA
   });
 
   await scheduler.runDueWork();
-  assert.equal(checks[0].verdict, "PROVEN");
+  assert.equal(checks[0].verdict, "REVERSED");
 });

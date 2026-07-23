@@ -260,7 +260,7 @@ test("a completed refund triggers a fresh check and updates the existing Proof C
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refundReference: "refund-ref-1" }),
   });
   assert.equal(duplicate.status, 202);
-  assert.equal(receipt.verdictHistory.length, 1, "duplicate refund requests do not duplicate verdict transitions");
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "PROVEN"], "duplicate refund requests do not duplicate verdict transitions");
 });
 
 function makeWorkflow(receipt, ledger) {
