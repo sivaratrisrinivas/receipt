@@ -1,0 +1,38 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+[mcp_servers.signoz]
+url = "http://127.0.0.1:8001/mcp"
+enabled = true
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "signoz_list_metrics",
+  "signoz_query_metrics",
+  "signoz_get_top_metrics",
+  "signoz_check_metric_usage",
+  "signoz_check_metric_cardinality",
+  "signoz_get_field_keys",
+  "signoz_get_field_values",
+  "signoz_list_alerts",
+  "signoz_list_alert_rules",
+  "signoz_get_alert",
+  "signoz_get_alert_history",
+  "signoz_list_dashboards",
+  "signoz_get_dashboard",
+  "signoz_list_services",
+  "signoz_get_service_top_operations",
+  "signoz_list_views",
+  "signoz_get_view",
+  "signoz_search_docs",
+  "signoz_fetch_doc",
+  "signoz_aggregate_logs",
+  "signoz_search_logs",
+  "signoz_aggregate_traces",
+  "signoz_search_traces",
+  "signoz_get_trace_details",
+  "signoz_execute_builder_query",
+  "signoz_list_notification_channels",
+  "signoz_get_notification_channel",
+]

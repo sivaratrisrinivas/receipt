@@ -1,0 +1,17 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Foundry-generated deployment material. The casting and lock are committed.
+pours/
+
+# Local logs and test output
+*.log
+coverage/
+test-results/
+
+# Node dependencies and build output (used after the prototype phase)
+node_modules/
+dist/
+.next/
