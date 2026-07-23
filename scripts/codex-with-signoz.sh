@@ -24,7 +24,7 @@ fi
 if [[ "${1:-}" == "--doctor" ]]; then
   shift
   REQUIRE_SIGNOZ_AUTH=1 exec "${repo_root}/scripts/signoz-doctor.sh" "$@"
-}
+fi
 
 command -v codex >/dev/null 2>&1 || {
   printf '%s\n' "Codex CLI is not installed or is not on PATH." >&2
