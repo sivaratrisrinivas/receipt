@@ -8,6 +8,7 @@ test("durable deadline work is freshly checked after a restart", async () => {
     clock: () => new Date("2026-07-24T10:05:00.000Z"),
     receipt: {
       async findDueSchedule() { return [{ scheduleId: 1, claimId: "claim-1", refundReference: "refund-ref-1", kind: "COMPLETION_DEADLINE", currentVerdict: "PENDING", completionDeadlineAt: "2026-07-24T10:05:00.000Z" }]; },
+      async claimDueSchedule() { return true; },
       async recordVerificationOutcome(check) { checks.push(check); },
     },
     ledger: { async readRefundState() { return "PROCESSING"; } },

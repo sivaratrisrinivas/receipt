@@ -51,11 +51,21 @@ export function createNeonReceiptStore(receiptClient) {
                 claim.verdict AS "currentVerdict"
            FROM receipt.verification_schedule AS schedule
            JOIN receipt.claims AS claim ON claim.id = schedule.claim_id
-          WHERE schedule.completed_at IS NULL AND schedule.due_at <= $1
+          WHERE schedule.completed_at IS NULL AND schedule.claimed_at IS NULL AND schedule.due_at <= $1
           ORDER BY schedule.due_at`,
         [now.toISOString()],
       );
       return result.rows;
+    },
+
+    async claimDueSchedule(scheduleId, claimedAt) {
+      const result = await receiptClient.query(
+        `UPDATE receipt.verification_schedule SET claimed_at = $1
+          WHERE id = $2 AND completed_at IS NULL AND claimed_at IS NULL
+          RETURNING id`,
+        [claimedAt, scheduleId],
+      );
+      return result.rows.length === 1;
     },
 
     async recordVerificationOutcome({ scheduleId, claimId, checkedAt, refundState, kind, currentVerdict, verdict }) {
@@ -86,7 +96,7 @@ export function createNeonReceiptStore(receiptClient) {
       await receiptClient.query(`UPDATE receipt.claims SET verdict = 'INCONCLUSIVE', last_checked_at = $1 WHERE id = $2`, [checkedAt, claimId]);
       await receiptClient.query(`INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger) VALUES ($1, 'INCONCLUSIVE', $2, $3)`, [claimId, checkedAt, kind]);
       await receiptClient.query(`UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`, [checkedAt, scheduleId]);
-      await receiptClient.query(`INSERT INTO receipt.verification_schedule (claim_id, kind, due_at) VALUES ($1, 'RETRY', $2) ON CONFLICT (claim_id, kind) DO NOTHING`, [claimId, new Date(new Date(checkedAt).getTime() + 5000).toISOString()]);
+      await receiptClient.query(`INSERT INTO receipt.verification_schedule (claim_id, kind, due_at) VALUES ($1, 'RETRY', $2)`, [claimId, new Date(new Date(checkedAt).getTime() + 5000).toISOString()]);
     },
 
     async storeClaimWithInitialCheckAndSchedule({

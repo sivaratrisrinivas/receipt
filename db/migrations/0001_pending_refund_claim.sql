@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS receipt.verification_schedule (
   claim_id text NOT NULL REFERENCES receipt.claims(id),
   kind text NOT NULL CHECK (kind IN ('INITIAL', 'COMPLETION_DEADLINE')),
   due_at timestamptz NOT NULL,
+  claimed_at timestamptz,
   completed_at timestamptz,
-  UNIQUE (claim_id, kind)
+  UNIQUE (claim_id, kind, due_at)
 );

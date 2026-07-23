@@ -5,6 +5,7 @@ export function createVerificationScheduler({ clock, receipt, ledger }) {
     const dueWork = await receipt.findDueSchedule(clock());
     for (const work of dueWork) {
       const checkedAt = clock().toISOString();
+      if (!(await receipt.claimDueSchedule(work.scheduleId, checkedAt))) continue;
       try {
         const refundState = await ledger.readRefundState(work.refundReference);
         await receipt.recordVerificationOutcome({
