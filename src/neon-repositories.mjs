@@ -46,7 +46,9 @@ export function createNeonReceiptStore(receiptClient) {
     async findDueSchedule(now) {
       const result = await receiptClient.query(
         `SELECT schedule.id AS "scheduleId", schedule.kind, claim.id AS "claimId",
-                claim.refund_reference AS "refundReference"
+                claim.refund_reference AS "refundReference",
+                claim.completion_deadline_at AS "completionDeadlineAt",
+                claim.verdict AS "currentVerdict"
            FROM receipt.verification_schedule AS schedule
            JOIN receipt.claims AS claim ON claim.id = schedule.claim_id
           WHERE schedule.completed_at IS NULL AND schedule.due_at <= $1
@@ -56,16 +58,35 @@ export function createNeonReceiptStore(receiptClient) {
       return result.rows;
     },
 
-    async recordScheduledCheck({ scheduleId, claimId, checkedAt, refundState, trigger }) {
+    async recordVerificationOutcome({ scheduleId, claimId, checkedAt, refundState, kind, currentVerdict, verdict }) {
       await receiptClient.query(
         `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
          VALUES ($1, $2, $3, $4)`,
-        [claimId, checkedAt, refundState, trigger],
+        [claimId, checkedAt, refundState, kind],
+      );
+      await receiptClient.query(
+        `UPDATE receipt.claims SET verdict = $1, last_checked_at = $2 WHERE id = $3`,
+        [verdict, checkedAt, claimId],
+      );
+      if (verdict !== currentVerdict) await receiptClient.query(
+        `INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
+         VALUES ($1, $2, $3, $4)`, [claimId, verdict, checkedAt, kind],
       );
       await receiptClient.query(
         `UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`,
         [checkedAt, scheduleId],
       );
+    },
+
+    async recordInconclusive({ scheduleId, claimId, checkedAt, kind }) {
+      await receiptClient.query(
+        `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
+         VALUES ($1, $2, 'READ_FAILED', $3)`, [claimId, checkedAt, kind],
+      );
+      await receiptClient.query(`UPDATE receipt.claims SET verdict = 'INCONCLUSIVE', last_checked_at = $1 WHERE id = $2`, [checkedAt, claimId]);
+      await receiptClient.query(`INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger) VALUES ($1, 'INCONCLUSIVE', $2, $3)`, [claimId, checkedAt, kind]);
+      await receiptClient.query(`UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`, [checkedAt, scheduleId]);
+      await receiptClient.query(`INSERT INTO receipt.verification_schedule (claim_id, kind, due_at) VALUES ($1, 'RETRY', $2) ON CONFLICT (claim_id, kind) DO NOTHING`, [claimId, new Date(new Date(checkedAt).getTime() + 5000).toISOString()]);
     },
 
     async storeClaimWithInitialCheckAndSchedule({

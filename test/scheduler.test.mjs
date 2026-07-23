@@ -7,11 +7,11 @@ test("durable deadline work is freshly checked after a restart", async () => {
   const scheduler = createVerificationScheduler({
     clock: () => new Date("2026-07-24T10:05:00.000Z"),
     receipt: {
-      async findDueSchedule() { return [{ scheduleId: 1, claimId: "claim-1", refundReference: "refund-ref-1", kind: "COMPLETION_DEADLINE" }]; },
-      async recordScheduledCheck(check) { checks.push(check); },
+      async findDueSchedule() { return [{ scheduleId: 1, claimId: "claim-1", refundReference: "refund-ref-1", kind: "COMPLETION_DEADLINE", currentVerdict: "PENDING", completionDeadlineAt: "2026-07-24T10:05:00.000Z" }]; },
+      async recordVerificationOutcome(check) { checks.push(check); },
     },
     ledger: { async readRefundState() { return "PROCESSING"; } },
   });
   assert.equal(await scheduler.runDueWork(), 1);
-  assert.deepEqual(checks, [{ scheduleId: 1, claimId: "claim-1", checkedAt: "2026-07-24T10:05:00.000Z", refundState: "PROCESSING", trigger: "COMPLETION_DEADLINE" }]);
+  assert.deepEqual(checks, [{ scheduleId: 1, claimId: "claim-1", refundReference: "refund-ref-1", kind: "COMPLETION_DEADLINE", currentVerdict: "PENDING", completionDeadlineAt: "2026-07-24T10:05:00.000Z", checkedAt: "2026-07-24T10:05:00.000Z", refundState: "PROCESSING", verdict: "FALSE_SUCCESS" }]);
 });

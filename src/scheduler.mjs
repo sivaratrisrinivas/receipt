@@ -5,15 +5,22 @@ export function createVerificationScheduler({ clock, receipt, ledger }) {
     const dueWork = await receipt.findDueSchedule(clock());
     for (const work of dueWork) {
       const checkedAt = clock().toISOString();
-      const refundState = await ledger.readRefundState(work.refundReference);
-      await receipt.recordScheduledCheck({
-        scheduleId: work.scheduleId,
-        claimId: work.claimId,
-        checkedAt,
-        refundState,
-        trigger: work.kind,
-      });
+      try {
+        const refundState = await ledger.readRefundState(work.refundReference);
+        await receipt.recordVerificationOutcome({
+          ...work, checkedAt, refundState, verdict: verdictFor(work, refundState, checkedAt),
+        });
+      } catch {
+        await receipt.recordInconclusive({ ...work, checkedAt });
+      }
     }
     return dueWork.length;
   }
+}
+
+function verdictFor(work, refundState, checkedAt) {
+  if (refundState === "SUCCEEDED") return "PROVEN";
+  return new Date(work.completionDeadlineAt) <= new Date(checkedAt)
+    ? "FALSE_SUCCESS"
+    : "PENDING";
 }
