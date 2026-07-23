@@ -1,0 +1,3 @@
+# Use an explicit refund state machine
+
+The Payment Ledger will treat a missing record as “not reached” rather than a Refund State, allow `PROCESSING` to become `SUCCEEDED` or `REJECTED`, allow `SUCCEEDED` to become `REJECTED` for a provider reversal, and require external Remediation to move `REJECTED` through `PROCESSING` before `SUCCEEDED`. The same Refund Reference survives these transitions, every real state change sends a Verification Trigger, and duplicate requests or notifications create neither duplicate refunds nor duplicate verdict transitions. Receipt reads only current authoritative state and preserves its observations separately in Verdict History, providing the temporal behavior the MVP needs without turning the ledger into a general payment processor.

@@ -1,0 +1,3 @@
+# Use INCONCLUSIVE when authoritative rechecks fail
+
+When a fresh authoritative check fails during active verification or monitoring, Receipt will append `INCONCLUSIVE` instead of retaining stale `PROVEN`, inventing `FALSE_SUCCESS`, or claiming `REVERSED`. Verdict History preserves the last confirmed state and time; Receipt retries automatically, then appends `PROVEN` or `REVERSED` when reliable access returns without restarting the original Monitoring Window. This temporarily reduces customer certainty during an outage but keeps the current Proof Card honest about what Receipt can presently establish.

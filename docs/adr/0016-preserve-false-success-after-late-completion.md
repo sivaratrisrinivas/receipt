@@ -1,0 +1,3 @@
+# Preserve false success after late completion
+
+When external Remediation causes a previously disproven refund to reach `SUCCEEDED`, Receipt will append `PROVEN`, describe the outcome as completed late, and begin the Monitoring Window at that new proof time without deleting the earlier `FALSE_SUCCESS`. The First Conclusive Verdict and False-success Rate remain unchanged because the agent's original completion claim still failed its deadline, while the current Proof Card must also reflect that the customer eventually received the promised outcome. Receipt observes this change after a Verification Trigger but never performs the Remediation itself.

@@ -1,0 +1,3 @@
+# Recheck authoritative state after every trigger and schedule
+
+The Payment Ledger will send the Verifier an HTTP Verification Trigger after refund state changes, while a durable Verification Schedule performs the initial check, the Completion Deadline check, periodic checks during the Monitoring Window, a final check at its close, and bounded-backoff retries after transient failures. Every trigger or scheduled check causes a fresh read of Neon rather than carrying a trusted verdict; persisted schedules survive service restarts, duplicate signals do not duplicate verdict transitions, and notifications or timers can accelerate observation but never decide business truth.

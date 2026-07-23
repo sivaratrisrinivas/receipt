@@ -1,0 +1,3 @@
+# Bind Claims to trusted Refund References
+
+The support workflow will create an opaque Refund Reference before the agent acts and carry it through the refund tool, Refund Service, Payment Ledger, Receipt, and privacy-safe telemetry. Claim Recognition may interpret the agent's words but cannot invent or change this subject binding; the Verifier checks only the matching ledger record and returns `INCONCLUSIVE` when no unique trusted reference exists. This prevents a model-extracted or unrelated identifier from proving the wrong refund while still allowing a skipped tool call to become `FALSE_SUCCESS` after the deadline.
