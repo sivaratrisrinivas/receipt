@@ -83,3 +83,26 @@ test("the Receipt adapter stores the Claim and its initial durable work together
   assert.ok(calls.some(({ sql }) => sql.includes("INSERT INTO receipt.claims")));
   assert.ok(calls.some(({ sql }) => sql.includes("INSERT INTO receipt.verification_schedule")));
 });
+
+test("a duplicate Verification Trigger cannot append a second verdict transition", async () => {
+  const calls = [];
+  const receipt = createNeonReceiptStore({
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      if (sql.includes("RETURNING id")) return { rows: [] };
+      return { rows: [] };
+    },
+  });
+
+  await receipt.recordTriggeredVerification({
+    claim: { id: "claim-1", verdict: "PENDING" },
+    checkedAt: "2026-07-24T10:00:00.000Z",
+    refundState: "SUCCEEDED",
+    verdict: "PROVEN",
+    monitoringEndsAt: "2026-07-31T10:00:00.000Z",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /WHERE id = \$4 AND verdict <> \$1/);
+  assert.match(calls[0].sql, /SELECT id, \$1, \$2, 'LEDGER_CHANGE' FROM transition/);
+});

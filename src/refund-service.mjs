@@ -10,8 +10,7 @@ export function createRefundService({ ledger, trustedReferences, verificationTri
   }
 
   async function transitionAndTrigger(refundReference, nextState) {
-    if (await ledger.transitionRefund(refundReference, nextState)) {
-      await verificationTrigger({ refundReference });
-    }
+    await ledger.transitionRefund(refundReference, nextState);
+    await verificationTrigger({ refundReference });
   }
 }

@@ -3,6 +3,10 @@ import { readJson } from "./http-json.mjs";
 
 export function createSupportWorkflowServer(workflow) {
   return createServer(async (request, response) => {
+      if (request.method === "GET" && request.url === "/health") {
+        response.writeHead(204).end();
+        return;
+      }
       if (request.method === "GET" && request.url?.startsWith("/proof-cards?")) {
         const messageReference = new URL(request.url, "http://localhost").searchParams.get("messageReference");
         const proofCard = await workflow.getProofCard({ messageReference });

@@ -77,6 +77,12 @@ test("a completed refund triggers a fresh check and updates the existing Proof C
   await new Promise((resolve) => refundServer.listen(0, "127.0.0.1", resolve));
   t.after(() => refundServer.close());
 
+  const untrusted = await fetch(`http://127.0.0.1:${refundServer.address().port}/refunds/complete`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refundReference: "refund-ref-not-trusted" }),
+  });
+  assert.equal(untrusted.status, 400);
+  assert.equal(ledger.transitions, 0, "an untrusted reference cannot create a ledger refund");
+
   const completion = await fetch(`http://127.0.0.1:${refundServer.address().port}/refunds/complete`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refundReference: "refund-ref-1" }),
   });
@@ -100,7 +106,7 @@ test("a completed refund triggers a fresh check and updates the existing Proof C
     { verdict: "PROVEN", at: "2026-07-24T10:00:00.000Z" },
   );
   assert.equal(receipt.schedules.filter(({ kind }) => kind === "MONITORING_FINAL").length, 1);
-  assert.equal(ledger.reads, 2, "the trigger does not carry a verdict; the Verifier reads the ledger again");
+  assert.equal(ledger.reads, 3, "the trigger does not carry a verdict; the Verifier reads the ledger again for each state change");
 
   const duplicate = await fetch(`http://127.0.0.1:${refundServer.address().port}/refunds/complete`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refundReference: "refund-ref-1" }),
@@ -114,7 +120,9 @@ function makeWorkflow(receipt, ledger) {
 }
 class LedgerReader { constructor(refunds) { this.refunds = refunds; this.reads = 0; } async readRefundState(ref) { this.reads += 1; return this.refunds[ref] ?? "MISSING"; } }
 class WritableLedger extends LedgerReader {
+  transitions = 0;
   async transitionRefund(refundReference, nextState) {
+    this.transitions += 1;
     const current = this.refunds[refundReference] ?? "MISSING";
     const legal = (current === "MISSING" && nextState === "PROCESSING")
       || (current === "PROCESSING" && ["SUCCEEDED", "REJECTED"].includes(nextState))

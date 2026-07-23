@@ -14,9 +14,9 @@ if (!databaseUrl) throw new Error("VERIFIER_DATABASE_URL must use the restricted
 const ledgerDatabaseUrl = process.env.LEDGER_DATABASE_URL;
 if (!ledgerDatabaseUrl) throw new Error("LEDGER_DATABASE_URL must use the Payment Ledger writer role and be set in ignored local environment configuration.");
 const sql = neon(databaseUrl);
-const client = { query: async (statement, values) => ({ rows: await sql.query(statement, values) }) };
+const client = createNeonClient(sql);
 const ledgerSql = neon(ledgerDatabaseUrl);
-const ledgerClient = { query: async (statement, values) => ({ rows: await ledgerSql.query(statement, values) }) };
+const ledgerClient = createNeonClient(ledgerSql);
 const receipt = createNeonReceiptStore(client);
 const verifier = createVerifier({ clock: () => new Date(), receipt, ledger: createNeonLedgerReader(client) });
 const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier });
@@ -33,3 +33,12 @@ const refundService = createRefundService({
   verificationTrigger: createVerificationTriggerClient({ baseUrl: `http://127.0.0.1:${verifierPort}` }),
 });
 createRefundServiceServer(refundService).listen(Number(process.env.REFUND_SERVICE_PORT ?? 3001), "127.0.0.1");
+
+function createNeonClient(sql) {
+  return {
+    query: async (statement, values) => ({ rows: await sql.query(statement, values) }),
+    transaction: async (statements) => sql.transaction(
+      statements.map(({ statement, values }) => sql.query(statement, values)),
+    ).then((results) => results.map((rows) => ({ rows }))),
+  };
+}

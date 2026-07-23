@@ -3,6 +3,10 @@ import { readJson } from "./http-json.mjs";
 
 export function createVerifierServer(verifier) {
   return createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(204).end();
+      return;
+    }
     if (request.method !== "POST" || request.url !== "/verification-triggers") {
       response.writeHead(404).end();
       return;

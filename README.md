@@ -26,7 +26,7 @@ Use Node.js 24.18.0 and an ignored `.env` file:
 nvm use
 npm install
 cp .env.example .env
-# Set VERIFIER_DATABASE_URL to the restricted Neon verifier connection.
+# Set VERIFIER_DATABASE_URL and LEDGER_DATABASE_URL to their purpose-specific Neon roles.
 npm test
 npm start
 ```
@@ -43,6 +43,31 @@ The separately bound Refund Service listens on `REFUND_SERVICE_PORT` (default
 uses the Ledger writer role to move a refund through its legal states. Every
 actual state change causes Receipt to perform a new independent Ledger read;
 the service response itself never proves a Claim.
+
+## Verify refund completion against Neon
+
+An administrator must apply the committed migrations and explicitly provision
+the two database roles before the application is started. This is a deliberate
+external database action; never put an administrator URL in `.env` or Git.
+
+```bash
+# With an administrator connection supplied only for this shell:
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0001_pending_refund_claim.sql
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0002_record_deadline_verdicts.sql
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0003_claim_schedule_work.sql
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0004_monitor_proven_refunds.sql
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/provisioning/receipt-verifier-grants.sql
+psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/provisioning/receipt-ledger-writer-grants.sql
+
+# With only purpose-specific URLs in ignored .env:
+npm run acceptance:refund
+```
+
+The acceptance command starts the same Support Workflow, Refund Service, and
+Verifier used by `npm start`. It proves `PENDING → PROVEN`, repeats the refund
+request to confirm idempotency, and emits a privacy-safe proof-card update
+latency measurement. Telemetry visibility is intentionally reported separately
+and remains outside this issue's Evidence Trail work.
 
 The project is deliberately still small. Its product goals, planned Evidence
 View, SigNoz dashboard, and later Claim Types are described in

@@ -3,6 +3,10 @@ import { readJson } from "./http-json.mjs";
 
 export function createRefundServiceServer(refundService) {
   return createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(204).end();
+      return;
+    }
     if (request.method !== "POST" || request.url !== "/refunds/complete") {
       response.writeHead(404).end();
       return;

@@ -93,38 +93,31 @@ export function createNeonReceiptStore(receiptClient) {
     },
 
     async recordTriggeredVerification({ claim, checkedAt, refundState, verdict, monitoringEndsAt }) {
-      await receiptClient.query("BEGIN");
-      try {
-        await receiptClient.query(
-          `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
-           VALUES ($1, $2, $3, 'LEDGER_CHANGE')`,
-          [claim.id, checkedAt, refundState],
-        );
-        await receiptClient.query(
-          `UPDATE receipt.claims
+      await receiptClient.query(
+        `WITH transition AS (
+           UPDATE receipt.claims
               SET verdict = $1, last_checked_at = $2,
                   first_proven_at = CASE WHEN $1 = 'PROVEN' THEN COALESCE(first_proven_at, $2) ELSE first_proven_at END,
                   monitoring_ends_at = CASE WHEN $1 = 'PROVEN' THEN COALESCE(monitoring_ends_at, $3) ELSE monitoring_ends_at END,
                   first_conclusive_verdict = CASE WHEN $1 = 'PROVEN' THEN COALESCE(first_conclusive_verdict, 'PROVEN') ELSE first_conclusive_verdict END,
                   first_conclusive_at = CASE WHEN $1 = 'PROVEN' THEN COALESCE(first_conclusive_at, $2) ELSE first_conclusive_at END
-            WHERE id = $4`,
-          [verdict, checkedAt, monitoringEndsAt, claim.id],
-        );
-        if (verdict !== claim.verdict) await receiptClient.query(
-          `INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
-           VALUES ($1, $2, $3, 'LEDGER_CHANGE')`,
-          [claim.id, verdict, checkedAt],
-        );
-        if (monitoringEndsAt !== null) await receiptClient.query(
-          `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at)
-           VALUES ($1, 'MONITORING_FINAL', $2) ON CONFLICT DO NOTHING`,
-          [claim.id, monitoringEndsAt],
-        );
-        await receiptClient.query("COMMIT");
-      } catch (error) {
-        await receiptClient.query("ROLLBACK");
-        throw error;
-      }
+            WHERE id = $4 AND verdict <> $1
+            RETURNING id
+         ), same_verdict AS (
+           UPDATE receipt.claims SET last_checked_at = $2
+            WHERE id = $4 AND NOT EXISTS (SELECT 1 FROM transition)
+         ), authoritative_check AS (
+           INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
+           VALUES ($4, $2, $5, 'LEDGER_CHANGE')
+         ), verdict_history_entry AS (
+           INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
+           SELECT id, $1, $2, 'LEDGER_CHANGE' FROM transition
+         )
+         INSERT INTO receipt.verification_schedule (claim_id, kind, due_at)
+         SELECT id, 'MONITORING_FINAL', $3 FROM transition WHERE $3 IS NOT NULL
+         ON CONFLICT DO NOTHING`,
+        [verdict, checkedAt, monitoringEndsAt, claim.id, refundState],
+      );
     },
 
     async findDueSchedule(now) {
@@ -189,27 +182,28 @@ export function createNeonReceiptStore(receiptClient) {
       authoritativeCheck,
       schedule,
     }) {
-      await receiptClient.query("BEGIN");
-      try {
-        await receiptClient.query(
+      const statements = [
+        {
+          statement:
           `INSERT INTO receipt.contract_versions
              (version, claim_type, completion_deadline_ms, monitoring_window_ms)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (version) DO NOTHING`,
-          [
+          values: [
             contractVersion.version,
             contractVersion.claimType,
             contractVersion.completionDeadlineMs,
             contractVersion.monitoringWindowMs,
           ],
-        );
-        await receiptClient.query(
+        },
+        {
+          statement:
           `INSERT INTO receipt.claims
              (id, claim_type, message_reference, refund_reference, contract_version,
               recognized_at, completion_deadline_at, verdict, last_checked_at,
               first_proven_at, monitoring_ends_at, first_conclusive_verdict, first_conclusive_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-          [
+          values: [
             claim.id,
             claim.type,
             claim.messageReference,
@@ -224,25 +218,32 @@ export function createNeonReceiptStore(receiptClient) {
             claim.firstConclusiveVerdict ?? null,
             claim.firstConclusiveAt ?? null,
           ],
-        );
-        await receiptClient.query(
+        },
+        {
+          statement:
           `INSERT INTO receipt.authoritative_checks
              (claim_id, checked_at, refund_state, trigger)
            VALUES ($1, $2, $3, $4)`,
-          [
+          values: [
             authoritativeCheck.claimId,
             authoritativeCheck.checkedAt,
             authoritativeCheck.refundState,
             authoritativeCheck.trigger,
           ],
-        );
-        for (const item of schedule) {
-          await receiptClient.query(
-            `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at, completed_at)
+        },
+        ...schedule.map((item) => ({
+          statement: `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at, completed_at)
              VALUES ($1, $2, $3, $4)`,
-            [item.claimId, item.kind, item.dueAt, item.completedAt ?? null],
-          );
-        }
+          values: [item.claimId, item.kind, item.dueAt, item.completedAt ?? null],
+        })),
+      ];
+      if (receiptClient.transaction) {
+        await receiptClient.transaction(statements);
+        return;
+      }
+      await receiptClient.query("BEGIN");
+      try {
+        for (const { statement, values } of statements) await receiptClient.query(statement, values);
         await receiptClient.query("COMMIT");
       } catch (error) {
         await receiptClient.query("ROLLBACK");
