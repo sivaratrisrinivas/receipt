@@ -36,3 +36,6 @@ enabled_tools = [
   "signoz_list_notification_channels",
   "signoz_get_notification_channel",
 ]
+
+[mcp_servers.signoz.env_http_headers]
+SIGNOZ-API-KEY = "SIGNOZ_API_KEY"

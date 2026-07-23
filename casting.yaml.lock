@@ -349,9 +349,6 @@ spec:
     - op: replace
       path: /services/signoz-mcp/ports/0
       value: 127.0.0.1:8001:8000
-    - op: add
-      path: /services/signoz-mcp/environment/-
-      value: SIGNOZ_API_KEY=${SIGNOZ_API_KEY:-}
     - op: replace
       path: /services/signoz-signoz-0/ports/0
       value: 127.0.0.1:8080:8080

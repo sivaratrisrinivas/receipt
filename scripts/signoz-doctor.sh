@@ -66,7 +66,7 @@ curl \
   "http://127.0.0.1:8001/readyz" >/dev/null
 pass "SigNoz MCP readiness endpoint is healthy"
 
-url_only_status="$(
+unauthenticated_status="$(
   curl \
     --output /dev/null \
     --silent \
@@ -77,15 +77,16 @@ url_only_status="$(
     "http://127.0.0.1:8001/mcp"
 )"
 
+[[ "${unauthenticated_status}" == "401" ]] ||
+  fail "unauthenticated MCP request returned HTTP ${unauthenticated_status}, expected 401"
+pass "SigNoz MCP rejects unauthenticated requests"
+
 if [[ -z "${SIGNOZ_API_KEY:-}" ]]; then
-  if [[ "${REQUIRE_SIGNOZ_SERVER_AUTH:-0}" == "1" ]]; then
-    fail "set SIGNOZ_API_KEY in .env and run ./scripts/signoz-up.sh"
+  if [[ "${REQUIRE_SIGNOZ_AUTH:-0}" == "1" ]]; then
+    fail "SIGNOZ_API_KEY is required when REQUIRE_SIGNOZ_AUTH=1"
   fi
 
-  [[ "${url_only_status}" == "401" ]] ||
-    fail "MCP without a configured server credential returned HTTP ${url_only_status}, expected 401"
-  pass "MCP requires authentication until a server credential is configured"
-  printf '%s\n' "SKIP: set SIGNOZ_API_KEY in .env and re-run ./scripts/signoz-up.sh for URL-only client access"
+  printf '%s\n' "SKIP: set SIGNOZ_API_KEY to validate the investigation service account"
   exit 0
 fi
 
@@ -95,8 +96,21 @@ curl \
   --show-error \
   --header "SIGNOZ-API-KEY: ${SIGNOZ_API_KEY}" \
   "http://127.0.0.1:8080/api/v1/service_accounts/me" >/dev/null
-pass "SigNoz service-account key authenticates directly"
+pass "SigNoz service-account key authenticates"
 
-[[ "${url_only_status}" == "200" ]] ||
-  fail "URL-only MCP initialize returned HTTP ${url_only_status}; re-run ./scripts/signoz-up.sh to load the key into the MCP container"
-pass "SigNoz MCP provides URL-only client access with its server-side key"
+authenticated_status="$(
+  curl \
+    --output /dev/null \
+    --silent \
+    --write-out '%{http_code}' \
+    --request POST \
+    --header "Accept: application/json, text/event-stream" \
+    --header "Content-Type: application/json" \
+    --header "SIGNOZ-API-KEY: ${SIGNOZ_API_KEY}" \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"receipt-doctor","version":"1"}}}' \
+    "http://127.0.0.1:8001/mcp"
+)"
+
+[[ "${authenticated_status}" == "200" ]] ||
+  fail "authenticated MCP initialize returned HTTP ${authenticated_status}, expected 200"
+pass "SigNoz MCP accepts the client-provided service-account key"
