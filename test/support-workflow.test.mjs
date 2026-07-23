@@ -34,13 +34,35 @@ test("the public support-workflow doorway returns a private PENDING Proof Card",
   assert.equal(receipt.schedules.length, 2);
 });
 
+test("the public support-workflow doorway returns INCONCLUSIVE when its initial Payment Ledger read fails", async (t) => {
+  const receipt = new InMemoryReceiptStore();
+  const ledger = new FailingLedgerReader({});
+  ledger.failNextRead();
+  await receipt.create({ messageReference: "message-1", refundReference: "refund-ref-1" });
+  const server = createSupportWorkflowServer(makeWorkflow(receipt, ledger));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/trusted-promises`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messageReference: "message-1", finalStatement: "Your refund is complete." }),
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).verdict, "INCONCLUSIVE");
+  assert.deepEqual(receipt.authoritativeChecks.map(({ refundState }) => refundState), ["READ_FAILED"]);
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["INCONCLUSIVE"]);
+  assert.deepEqual(receipt.schedules.map(({ kind }) => kind), ["INITIAL", "COMPLETION_DEADLINE", "RETRY"]);
+});
+
 test("the public support workflow changes a skipped refund from PENDING to FALSE_SUCCESS at its Completion Deadline", async (t) => {
   let currentTime = new Date("2026-07-24T10:00:00.000Z");
   const clock = () => currentTime;
   const receipt = new InMemoryReceiptStore();
   const ledger = new LedgerReader({});
   await receipt.create({ messageReference: "message-1", refundReference: "refund-ref-1" });
-  const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier: createVerifier({ clock, receipt, ledger }) });
+  const verifier = createVerifier({ clock, receipt, ledger });
+  const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier });
   const server = createSupportWorkflowServer(workflow);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
@@ -72,6 +94,91 @@ test("the public support workflow changes a skipped refund from PENDING to FALSE
     { verdict: "FALSE_SUCCESS", at: "2026-07-24T10:05:00.000Z" },
   );
   assert.equal(ledger.reads, 2, "the deadline job uses a fresh authoritative read rather than a missing signal");
+});
+
+test("the public support workflow makes a failed Payment Ledger read inconclusive and recovers it after a restart", async (t) => {
+  let currentTime = new Date("2026-07-24T10:00:00.000Z");
+  const clock = () => currentTime;
+  const receipt = new InMemoryReceiptStore();
+  const ledger = new FailingLedgerReader({});
+  await receipt.create({ messageReference: "message-1", refundReference: "refund-ref-1" });
+  const verifier = createVerifier({ clock, receipt, ledger });
+  const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier });
+  const server = createSupportWorkflowServer(workflow);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+
+  await fetch(`http://127.0.0.1:${server.address().port}/trusted-promises`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messageReference: "message-1", finalStatement: "Your refund is complete." }),
+  });
+
+  currentTime = new Date("2026-07-24T10:05:00.000Z");
+  ledger.failNextRead();
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  const inconclusive = await fetch(`http://127.0.0.1:${server.address().port}/proof-cards?messageReference=message-1`);
+  assert.deepEqual(await inconclusive.json(), {
+    claimType: "refund_completed",
+    verdict: "INCONCLUSIVE",
+    reason: "Receipt could not reliably read the Payment Ledger.",
+    customerGuidance: "Do not retry. Contact support.",
+    completionDeadlineAt: "2026-07-24T10:05:00.000Z",
+    lastCheckedAt: "2026-07-24T10:05:00.000Z",
+  });
+  assert.deepEqual(receipt.authoritativeChecks.map(({ refundState }) => refundState), ["MISSING", "READ_FAILED"]);
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "INCONCLUSIVE"]);
+
+  currentTime = new Date("2026-07-24T10:05:01.000Z");
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  const recovered = await fetch(`http://127.0.0.1:${server.address().port}/proof-cards?messageReference=message-1`);
+  assert.equal((await recovered.json()).verdict, "FALSE_SUCCESS");
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "INCONCLUSIVE", "FALSE_SUCCESS"]);
+
+  currentTime = new Date("2026-07-24T10:05:02.000Z");
+  ledger.failNextRead();
+  await verifier.verifyRefundStateChange({ refundReference: "refund-ref-1" });
+  currentTime = new Date("2026-07-24T10:05:03.000Z");
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  const restored = await fetch(`http://127.0.0.1:${server.address().port}/proof-cards?messageReference=message-1`);
+  assert.equal((await restored.json()).verdict, "FALSE_SUCCESS");
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "INCONCLUSIVE", "FALSE_SUCCESS", "INCONCLUSIVE", "FALSE_SUCCESS"]);
+});
+
+test("a failed Monitoring Window read recovers as REVERSED without extending the original window", async (t) => {
+  let currentTime = new Date("2026-07-24T10:00:00.000Z");
+  const clock = () => currentTime;
+  const receipt = new InMemoryReceiptStore();
+  const ledger = new FailingLedgerReader({ "refund-ref-1": "SUCCEEDED" });
+  await receipt.create({ messageReference: "message-1", refundReference: "refund-ref-1" });
+  const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier: createVerifier({ clock, receipt, ledger }) });
+  const server = createSupportWorkflowServer(workflow);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+
+  await fetch(`http://127.0.0.1:${server.address().port}/trusted-promises`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messageReference: "message-1", finalStatement: "Your refund is complete." }),
+  });
+  const originalMonitoringEndsAt = receipt.claims[0].monitoringEndsAt;
+
+  currentTime = new Date("2026-07-24T10:05:00.000Z");
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  currentTime = new Date(originalMonitoringEndsAt);
+  ledger.refunds["refund-ref-1"] = "REJECTED";
+  ledger.failNextRead();
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  currentTime = new Date(currentTime.getTime() + 1_000);
+  await createVerificationScheduler({ clock, receipt, ledger }).runDueWork();
+
+  const proofCard = await fetch(`http://127.0.0.1:${server.address().port}/proof-cards?messageReference=message-1`);
+  assert.equal((await proofCard.json()).verdict, "REVERSED");
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PROVEN", "INCONCLUSIVE", "REVERSED"]);
+  assert.equal(receipt.claims[0].monitoringEndsAt, originalMonitoringEndsAt);
 });
 
 test("replaying a Message Reference after a restart does not create another Claim", async () => {
@@ -160,6 +267,17 @@ function makeWorkflow(receipt, ledger) {
   return createSupportWorkflow({ trustedReferences: receipt, verifier: createVerifier({ clock: now, receipt, ledger }) });
 }
 class LedgerReader { constructor(refunds) { this.refunds = refunds; this.reads = 0; } async readRefundState(ref) { this.reads += 1; return this.refunds[ref] ?? "MISSING"; } }
+class FailingLedgerReader extends LedgerReader {
+  failedRead = false;
+  failNextRead() { this.failedRead = true; }
+  async readRefundState(refundReference) {
+    if (this.failedRead) {
+      this.failedRead = false;
+      throw new Error("Payment Ledger unavailable");
+    }
+    return super.readRefundState(refundReference);
+  }
+}
 class WritableLedger extends LedgerReader {
   transitions = 0;
   async transitionRefund(refundReference, nextState) {
@@ -210,6 +328,7 @@ class InMemoryReceiptStore {
         refundReference: this.claims.find((claim) => claim.id === schedule.claimId).refundReference,
         completionDeadlineAt: this.claims.find((claim) => claim.id === schedule.claimId).completionDeadlineAt,
         currentVerdict: this.claims.find((claim) => claim.id === schedule.claimId).verdict,
+        firstConclusiveVerdict: this.claims.find((claim) => claim.id === schedule.claimId).firstConclusiveVerdict,
       }));
   }
   async claimDueSchedule(scheduleId, claimedAt) {
@@ -223,6 +342,7 @@ class InMemoryReceiptStore {
     this.authoritativeChecks.push({ claimId, checkedAt, refundState, trigger: kind });
     claim.verdict = verdict;
     claim.lastCheckedAt = checkedAt;
+    claim.retryCount = 0;
     if (verdict === "FALSE_SUCCESS") {
       claim.firstConclusiveVerdict ??= "FALSE_SUCCESS";
       claim.firstConclusiveAt ??= checkedAt;
@@ -230,5 +350,15 @@ class InMemoryReceiptStore {
     if (verdict !== currentVerdict) this.verdictHistory.push({ claimId, verdict, recordedAt: checkedAt, trigger: kind });
     this.schedules[scheduleId - 1].completedAt = checkedAt;
   }
-  async recordInconclusive() { throw new Error("Unexpected failed authoritative read"); }
+  async recordInconclusive({ scheduleId, claimId, checkedAt, kind }) {
+    const claim = this.claims.find((candidate) => candidate.id === claimId);
+    this.authoritativeChecks.push({ claimId, checkedAt, refundState: "READ_FAILED", trigger: kind });
+    const changed = claim.verdict !== "INCONCLUSIVE";
+    claim.verdict = "INCONCLUSIVE";
+    claim.lastCheckedAt = checkedAt;
+    if (changed) this.verdictHistory.push({ claimId, verdict: "INCONCLUSIVE", recordedAt: checkedAt, trigger: kind });
+    claim.retryCount = (claim.retryCount ?? 0) + 1;
+    if (scheduleId !== null && scheduleId !== undefined) this.schedules[scheduleId - 1].completedAt = checkedAt;
+    this.schedules.push({ claimId, kind: "RETRY", dueAt: new Date(new Date(checkedAt).getTime() + Math.min(2 ** (claim.retryCount - 1), 5) * 1000).toISOString() });
+  }
 }

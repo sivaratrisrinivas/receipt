@@ -84,7 +84,8 @@ export function createNeonReceiptStore(receiptClient) {
         `SELECT claim.id, claim.claim_type AS type, claim.message_reference AS "messageReference",
                 claim.refund_reference AS "refundReference", claim.completion_deadline_at AS "completionDeadlineAt",
                 claim.verdict, claim.last_checked_at AS "lastCheckedAt",
-                claim.first_proven_at AS "firstProvenAt", claim.monitoring_ends_at AS "monitoringEndsAt"
+                claim.first_proven_at AS "firstProvenAt", claim.monitoring_ends_at AS "monitoringEndsAt",
+                claim.first_conclusive_verdict AS "firstConclusiveVerdict"
            FROM receipt.claims AS claim
           WHERE claim.refund_reference = $1`,
         [refundReference],
@@ -156,13 +157,13 @@ export function createNeonReceiptStore(receiptClient) {
            VALUES ($1, $2, $3, $4)
          ), transition AS (
            UPDATE receipt.claims
-              SET verdict = $5, last_checked_at = $2,
+              SET verdict = $5, last_checked_at = $2, retry_count = 0,
                   first_conclusive_verdict = CASE WHEN $5 IN ('PROVEN', 'FALSE_SUCCESS') THEN COALESCE(first_conclusive_verdict, $5) ELSE first_conclusive_verdict END,
                   first_conclusive_at = CASE WHEN $5 IN ('PROVEN', 'FALSE_SUCCESS') THEN COALESCE(first_conclusive_at, $2) ELSE first_conclusive_at END
             WHERE id = $1 AND verdict <> $5
             RETURNING id
          ), same_verdict AS (
-           UPDATE receipt.claims SET last_checked_at = $2
+           UPDATE receipt.claims SET last_checked_at = $2, retry_count = 0
             WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM transition)
          ), verdict_history_entry AS (
            INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
@@ -173,15 +174,35 @@ export function createNeonReceiptStore(receiptClient) {
       );
     },
 
-    async recordInconclusive({ scheduleId, claimId, checkedAt, kind }) {
+    async recordInconclusive({ scheduleId = null, claimId, checkedAt, kind }) {
       await receiptClient.query(
-        `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
-         VALUES ($1, $2, 'READ_FAILED', $3)`, [claimId, checkedAt, kind],
+        `WITH authoritative_check AS (
+           INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
+           VALUES ($1, $2, 'READ_FAILED', $3)
+         ), transition AS (
+           UPDATE receipt.claims
+              SET verdict = 'INCONCLUSIVE', last_checked_at = $2, retry_count = retry_count + 1
+            WHERE id = $1 AND verdict <> 'INCONCLUSIVE'
+            RETURNING id, retry_count
+         ), same_verdict AS (
+           UPDATE receipt.claims
+              SET last_checked_at = $2, retry_count = retry_count + 1
+            WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM transition)
+            RETURNING id, retry_count
+         ), failed_check AS (
+           SELECT * FROM transition UNION ALL SELECT * FROM same_verdict
+         ), verdict_history_entry AS (
+           INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
+           SELECT id, 'INCONCLUSIVE', $2, $3 FROM transition
+         ), completed_schedule AS (
+           UPDATE receipt.verification_schedule SET completed_at = $2 WHERE id = $4
+         )
+         INSERT INTO receipt.verification_schedule (claim_id, kind, due_at)
+         SELECT id, 'RETRY', $2::timestamptz + LEAST(POWER(2, retry_count - 1), 5) * interval '1 second'
+           FROM failed_check
+         ON CONFLICT DO NOTHING`,
+        [claimId, checkedAt, kind, scheduleId],
       );
-      await receiptClient.query(`UPDATE receipt.claims SET verdict = 'INCONCLUSIVE', last_checked_at = $1 WHERE id = $2`, [checkedAt, claimId]);
-      await receiptClient.query(`INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger) VALUES ($1, 'INCONCLUSIVE', $2, $3)`, [claimId, checkedAt, kind]);
-      await receiptClient.query(`UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`, [checkedAt, scheduleId]);
-      await receiptClient.query(`INSERT INTO receipt.verification_schedule (claim_id, kind, due_at) VALUES ($1, 'RETRY', $2)`, [claimId, new Date(new Date(checkedAt).getTime() + 5000).toISOString()]);
     },
 
     async storeClaimWithInitialCheckAndSchedule({
@@ -209,8 +230,8 @@ export function createNeonReceiptStore(receiptClient) {
           `INSERT INTO receipt.claims
              (id, claim_type, message_reference, refund_reference, contract_version,
               recognized_at, completion_deadline_at, verdict, last_checked_at,
-              first_proven_at, monitoring_ends_at, first_conclusive_verdict, first_conclusive_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+              first_proven_at, monitoring_ends_at, first_conclusive_verdict, first_conclusive_at, retry_count)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
           values: [
             claim.id,
             claim.type,
@@ -225,6 +246,7 @@ export function createNeonReceiptStore(receiptClient) {
             claim.monitoringEndsAt ?? null,
             claim.firstConclusiveVerdict ?? null,
             claim.firstConclusiveAt ?? null,
+            claim.retryCount ?? 0,
           ],
         },
         {

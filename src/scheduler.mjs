@@ -23,8 +23,9 @@ export function createVerificationScheduler({ clock, receipt, ledger }) {
 
 function verdictFor(work, refundState, checkedAt) {
   if (refundState === "SUCCEEDED") return "PROVEN";
-  if (work.firstConclusiveVerdict == null && new Date(work.completionDeadlineAt) <= new Date(checkedAt)) {
+  if (work.firstConclusiveVerdict === "PROVEN") return "REVERSED";
+  if (new Date(work.completionDeadlineAt) <= new Date(checkedAt)) {
     return "FALSE_SUCCESS";
   }
-  return work.currentVerdict;
+  return "PENDING";
 }

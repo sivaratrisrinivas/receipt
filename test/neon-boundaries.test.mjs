@@ -153,3 +153,27 @@ test("a stale claimed schedule can be reclaimed after a service restart", async 
   assert.match(calls[1].sql, /claimed_at IS NULL OR claimed_at <= \$3/);
   assert.deepEqual(calls[1].values, [now.toISOString(), 1, reclaimBefore.toISOString()]);
 });
+
+test("a failed authoritative read records INCONCLUSIVE and a capped durable retry together", async () => {
+  const calls = [];
+  const receipt = createNeonReceiptStore({
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      return { rows: [] };
+    },
+  });
+
+  await receipt.recordInconclusive({
+    scheduleId: 1,
+    claimId: "claim-1",
+    checkedAt: "2026-07-24T10:05:00.000Z",
+    kind: "COMPLETION_DEADLINE",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /refund_state, trigger\)\s+VALUES \(\$1, \$2, 'READ_FAILED', \$3\)/);
+  assert.match(calls[0].sql, /SET verdict = 'INCONCLUSIVE', last_checked_at = \$2, retry_count = retry_count \+ 1/);
+  assert.match(calls[0].sql, /SELECT id, 'RETRY', \$2::timestamptz \+ LEAST\(POWER\(2, retry_count - 1\), 5\)/);
+  assert.match(calls[0].sql, /UPDATE receipt\.verification_schedule SET completed_at = \$2 WHERE id = \$4/);
+  assert.deepEqual(calls[0].values, ["claim-1", "2026-07-24T10:05:00.000Z", "COMPLETION_DEADLINE", 1]);
+});
