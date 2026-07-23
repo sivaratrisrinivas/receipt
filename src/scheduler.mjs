@@ -2,10 +2,12 @@ export function createVerificationScheduler({ clock, receipt, ledger }) {
   return { runDueWork };
 
   async function runDueWork() {
-    const dueWork = await receipt.findDueSchedule(clock());
+    const now = clock();
+    const reclaimBefore = new Date(now.getTime() - 30_000);
+    const dueWork = await receipt.findDueSchedule(now, reclaimBefore);
     for (const work of dueWork) {
       const checkedAt = clock().toISOString();
-      if (!(await receipt.claimDueSchedule(work.scheduleId, checkedAt))) continue;
+      if (!(await receipt.claimDueSchedule(work.scheduleId, checkedAt, reclaimBefore.toISOString()))) continue;
       try {
         const refundState = await ledger.readRefundState(work.refundReference);
         await receipt.recordVerificationOutcome({
@@ -21,7 +23,8 @@ export function createVerificationScheduler({ clock, receipt, ledger }) {
 
 function verdictFor(work, refundState, checkedAt) {
   if (refundState === "SUCCEEDED") return "PROVEN";
-  return new Date(work.completionDeadlineAt) <= new Date(checkedAt)
-    ? "FALSE_SUCCESS"
-    : "PENDING";
+  if (work.firstConclusiveVerdict == null && new Date(work.completionDeadlineAt) <= new Date(checkedAt)) {
+    return "FALSE_SUCCESS";
+  }
+  return work.currentVerdict;
 }

@@ -120,48 +120,56 @@ export function createNeonReceiptStore(receiptClient) {
       );
     },
 
-    async findDueSchedule(now) {
+    async findDueSchedule(now, reclaimBefore) {
       const result = await receiptClient.query(
         `SELECT schedule.id AS "scheduleId", schedule.kind, claim.id AS "claimId",
                 claim.refund_reference AS "refundReference",
                 claim.completion_deadline_at AS "completionDeadlineAt",
-                claim.verdict AS "currentVerdict"
+                claim.verdict AS "currentVerdict",
+                claim.first_conclusive_verdict AS "firstConclusiveVerdict"
            FROM receipt.verification_schedule AS schedule
            JOIN receipt.claims AS claim ON claim.id = schedule.claim_id
-          WHERE schedule.completed_at IS NULL AND schedule.claimed_at IS NULL AND schedule.due_at <= $1
+          WHERE schedule.completed_at IS NULL
+            AND (schedule.claimed_at IS NULL OR schedule.claimed_at <= $2)
+            AND schedule.due_at <= $1
           ORDER BY schedule.due_at`,
-        [now.toISOString()],
+        [now.toISOString(), reclaimBefore.toISOString()],
       );
       return result.rows;
     },
 
-    async claimDueSchedule(scheduleId, claimedAt) {
+    async claimDueSchedule(scheduleId, claimedAt, reclaimBefore) {
       const result = await receiptClient.query(
         `UPDATE receipt.verification_schedule SET claimed_at = $1
-          WHERE id = $2 AND completed_at IS NULL AND claimed_at IS NULL
+          WHERE id = $2 AND completed_at IS NULL
+            AND (claimed_at IS NULL OR claimed_at <= $3)
           RETURNING id`,
-        [claimedAt, scheduleId],
+        [claimedAt, scheduleId, reclaimBefore],
       );
       return result.rows.length === 1;
     },
 
-    async recordVerificationOutcome({ scheduleId, claimId, checkedAt, refundState, kind, currentVerdict, verdict }) {
+    async recordVerificationOutcome({ scheduleId, claimId, checkedAt, refundState, kind, verdict }) {
       await receiptClient.query(
-        `INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
-         VALUES ($1, $2, $3, $4)`,
-        [claimId, checkedAt, refundState, kind],
-      );
-      await receiptClient.query(
-        `UPDATE receipt.claims SET verdict = $1, last_checked_at = $2 WHERE id = $3`,
-        [verdict, checkedAt, claimId],
-      );
-      if (verdict !== currentVerdict) await receiptClient.query(
-        `INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
-         VALUES ($1, $2, $3, $4)`, [claimId, verdict, checkedAt, kind],
-      );
-      await receiptClient.query(
-        `UPDATE receipt.verification_schedule SET completed_at = $1 WHERE id = $2`,
-        [checkedAt, scheduleId],
+        `WITH authoritative_check AS (
+           INSERT INTO receipt.authoritative_checks (claim_id, checked_at, refund_state, trigger)
+           VALUES ($1, $2, $3, $4)
+         ), transition AS (
+           UPDATE receipt.claims
+              SET verdict = $5, last_checked_at = $2,
+                  first_conclusive_verdict = CASE WHEN $5 IN ('PROVEN', 'FALSE_SUCCESS') THEN COALESCE(first_conclusive_verdict, $5) ELSE first_conclusive_verdict END,
+                  first_conclusive_at = CASE WHEN $5 IN ('PROVEN', 'FALSE_SUCCESS') THEN COALESCE(first_conclusive_at, $2) ELSE first_conclusive_at END
+            WHERE id = $1 AND verdict <> $5
+            RETURNING id
+         ), same_verdict AS (
+           UPDATE receipt.claims SET last_checked_at = $2
+            WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM transition)
+         ), verdict_history_entry AS (
+           INSERT INTO receipt.verdict_history (claim_id, verdict, recorded_at, trigger)
+           SELECT id, $5, $2, $4 FROM transition
+         )
+         UPDATE receipt.verification_schedule SET completed_at = $2 WHERE id = $6`,
+        [claimId, checkedAt, refundState, kind, verdict, scheduleId],
       );
     },
 
@@ -230,6 +238,13 @@ export function createNeonReceiptStore(receiptClient) {
             authoritativeCheck.refundState,
             authoritativeCheck.trigger,
           ],
+        },
+        {
+          statement:
+          `INSERT INTO receipt.verdict_history
+             (claim_id, verdict, recorded_at, trigger)
+           VALUES ($1, $2, $3, 'INITIAL')`,
+          values: [claim.id, claim.verdict, claim.lastCheckedAt],
         },
         ...schedule.map((item) => ({
           statement: `INSERT INTO receipt.verification_schedule (claim_id, kind, due_at, completed_at)

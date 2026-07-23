@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { post, requireDatabaseUrls, startReceipt, waitForReceiptHealth } from "./acceptance-harness.mjs";
 
-const required = ["VERIFIER_DATABASE_URL", "LEDGER_DATABASE_URL"];
-for (const name of required) {
-  if (!process.env[name]) throw new Error(`${name} is required in ignored local environment configuration.`);
-}
+requireDatabaseUrls();
 
 const ports = { support: 3100, refund: 3101, verifier: 3102 };
-const processHandle = spawn(process.execPath, ["src/main.mjs"], {
-  env: { ...process.env, PORT: String(ports.support), REFUND_SERVICE_PORT: String(ports.refund), VERIFIER_PORT: String(ports.verifier) },
-  stdio: ["ignore", "ignore", "pipe"],
-});
-let startupError = "";
-processHandle.stderr.on("data", (chunk) => { startupError += chunk; });
+const receipt = startReceipt(ports);
 
 try {
-  await waitForHealth(`http://127.0.0.1:${ports.support}/health`);
-  await waitForHealth(`http://127.0.0.1:${ports.refund}/health`);
-  await waitForHealth(`http://127.0.0.1:${ports.verifier}/health`);
+  await waitForReceiptHealth(ports);
 
   const messageReference = `acceptance-${crypto.randomUUID()}`;
   const referenceResponse = await post(`http://127.0.0.1:${ports.support}/trusted-refund-references`, { messageReference });
@@ -54,25 +44,10 @@ try {
     verdict: proofCard.verdict,
   }));
 } catch (error) {
-  if (startupError) error.message = `${error.message} ${startupError}`;
+  if (receipt.startupError()) error.message = `${error.message} ${receipt.startupError()}`;
   throw error;
 } finally {
-  processHandle.kill();
-}
-
-async function post(url, body) {
-  return fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-}
-
-async function waitForHealth(url) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    try {
-      if ((await fetch(url)).status === 204) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`Service did not become healthy: ${url}`);
+  receipt.stop();
 }
 
 async function waitForProof(url) {

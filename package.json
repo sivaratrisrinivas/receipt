@@ -6,6 +6,7 @@
     "prototype:refund": "node prototypes/refund-completed/cli.mjs",
     "start": "node --env-file=.env src/main.mjs",
     "acceptance:refund": "node --env-file=.env scripts/accept-refund-completion.mjs",
+    "acceptance:missed-refund": "node --env-file=.env scripts/accept-missed-refund.mjs",
     "test": "node --test",
     "typecheck": "node --check src/main.mjs && node --check src/support-workflow.mjs && node --check src/verifier.mjs && node --check src/scheduler.mjs && node --check src/neon-repositories.mjs && node --check src/http-json.mjs && node --check src/refund-service.mjs && node --check src/refund-server.mjs && node --check src/verifier-server.mjs && node --check src/trusted-reference-client.mjs"
   },

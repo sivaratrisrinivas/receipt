@@ -81,6 +81,7 @@ test("the Receipt adapter stores the Claim and its initial durable work together
   assert.equal(calls[0].sql, "BEGIN");
   assert.equal(calls.at(-1).sql, "COMMIT");
   assert.ok(calls.some(({ sql }) => sql.includes("INSERT INTO receipt.claims")));
+  assert.ok(calls.some(({ sql }) => sql.includes("INSERT INTO receipt.verdict_history")));
   assert.ok(calls.some(({ sql }) => sql.includes("INSERT INTO receipt.verification_schedule")));
 });
 
@@ -105,4 +106,50 @@ test("a duplicate Verification Trigger cannot append a second verdict transition
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /WHERE id = \$4 AND verdict <> \$1/);
   assert.match(calls[0].sql, /SELECT id, \$1, \$2, 'LEDGER_CHANGE' FROM transition/);
+});
+
+test("a deadline FALSE_SUCCESS preserves the first conclusive verdict in one durable transition", async () => {
+  const calls = [];
+  const receipt = createNeonReceiptStore({
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      return { rows: [] };
+    },
+  });
+
+  await receipt.recordVerificationOutcome({
+    scheduleId: 1,
+    claimId: "claim-1",
+    checkedAt: "2026-07-24T10:05:00.000Z",
+    refundState: "MISSING",
+    kind: "COMPLETION_DEADLINE",
+    currentVerdict: "PENDING",
+    verdict: "FALSE_SUCCESS",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /first_conclusive_verdict = CASE WHEN \$5 IN \('PROVEN', 'FALSE_SUCCESS'\)/);
+  assert.match(calls[0].sql, /COALESCE\(first_conclusive_verdict, \$5\)/);
+  assert.match(calls[0].sql, /SELECT id, \$5, \$2, \$4 FROM transition/);
+  assert.deepEqual(calls[0].values, ["claim-1", "2026-07-24T10:05:00.000Z", "MISSING", "COMPLETION_DEADLINE", "FALSE_SUCCESS", 1]);
+});
+
+test("a stale claimed schedule can be reclaimed after a service restart", async () => {
+  const calls = [];
+  const receipt = createNeonReceiptStore({
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      return { rows: [{ id: 1 }] };
+    },
+  });
+
+  const now = new Date("2026-07-24T10:06:00.000Z");
+  const reclaimBefore = new Date("2026-07-24T10:05:30.000Z");
+  await receipt.findDueSchedule(now, reclaimBefore);
+  assert.match(calls[0].sql, /schedule\.claimed_at IS NULL OR schedule\.claimed_at <= \$2/);
+  assert.deepEqual(calls[0].values, [now.toISOString(), reclaimBefore.toISOString()]);
+
+  assert.equal(await receipt.claimDueSchedule(1, now.toISOString(), reclaimBefore.toISOString()), true);
+  assert.match(calls[1].sql, /claimed_at IS NULL OR claimed_at <= \$3/);
+  assert.deepEqual(calls[1].values, [now.toISOString(), 1, reclaimBefore.toISOString()]);
 });

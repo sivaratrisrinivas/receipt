@@ -7,6 +7,7 @@ import { createRefundService } from "../src/refund-service.mjs";
 import { createRefundServiceServer } from "../src/refund-server.mjs";
 import { createVerifierServer, createVerificationTriggerClient } from "../src/verifier-server.mjs";
 import { createTrustedReferenceClient } from "../src/trusted-reference-client.mjs";
+import { createVerificationScheduler } from "../src/scheduler.mjs";
 
 const now = () => new Date("2026-07-24T10:00:00.000Z");
 
@@ -31,6 +32,46 @@ test("the public support-workflow doorway returns a private PENDING Proof Card",
   assert.equal(receipt.claims.length, 1);
   assert.equal(receipt.authoritativeChecks.length, 1);
   assert.equal(receipt.schedules.length, 2);
+});
+
+test("the public support workflow changes a skipped refund from PENDING to FALSE_SUCCESS at its Completion Deadline", async (t) => {
+  let currentTime = new Date("2026-07-24T10:00:00.000Z");
+  const clock = () => currentTime;
+  const receipt = new InMemoryReceiptStore();
+  const ledger = new LedgerReader({});
+  await receipt.create({ messageReference: "message-1", refundReference: "refund-ref-1" });
+  const workflow = createSupportWorkflow({ trustedReferences: receipt, verifier: createVerifier({ clock, receipt, ledger }) });
+  const server = createSupportWorkflowServer(workflow);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+
+  const submitted = await fetch(`http://127.0.0.1:${server.address().port}/trusted-promises`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messageReference: "message-1", finalStatement: "Your refund is complete." }),
+  });
+  assert.equal((await submitted.json()).verdict, "PENDING");
+
+  currentTime = new Date("2026-07-24T10:05:00.000Z");
+  const scheduler = createVerificationScheduler({ clock, receipt, ledger });
+  assert.equal(await scheduler.runDueWork(), 1, "the durable deadline job can run after a service restart");
+  assert.equal(await scheduler.runDueWork(), 0, "duplicate deadline execution cannot record another verdict transition");
+
+  const proofCard = await fetch(`http://127.0.0.1:${server.address().port}/proof-cards?messageReference=message-1`);
+  assert.equal(proofCard.status, 200);
+  assert.deepEqual(await proofCard.json(), {
+    claimType: "refund_completed",
+    verdict: "FALSE_SUCCESS",
+    reason: "The Payment Ledger did not record the refund as completed by the Completion Deadline.",
+    customerGuidance: "Do not retry. Contact support.",
+    completionDeadlineAt: "2026-07-24T10:05:00.000Z",
+    lastCheckedAt: "2026-07-24T10:05:00.000Z",
+  });
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "FALSE_SUCCESS"]);
+  assert.deepEqual(
+    { verdict: receipt.claims[0].firstConclusiveVerdict, at: receipt.claims[0].firstConclusiveAt },
+    { verdict: "FALSE_SUCCESS", at: "2026-07-24T10:05:00.000Z" },
+  );
+  assert.equal(ledger.reads, 2, "the deadline job uses a fresh authoritative read rather than a missing signal");
 });
 
 test("replaying a Message Reference after a restart does not create another Claim", async () => {
@@ -100,7 +141,7 @@ test("a completed refund triggers a fresh check and updates the existing Proof C
     firstProvenAt: "2026-07-24T10:00:00.000Z",
     monitoringEndsAt: "2026-07-31T10:00:00.000Z",
   });
-  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PROVEN"]);
+  assert.deepEqual(receipt.verdictHistory.map(({ verdict }) => verdict), ["PENDING", "PROVEN"]);
   assert.deepEqual(
     { verdict: receipt.claims[0].firstConclusiveVerdict, at: receipt.claims[0].firstConclusiveAt },
     { verdict: "PROVEN", at: "2026-07-24T10:00:00.000Z" },
@@ -138,7 +179,13 @@ class InMemoryReceiptStore {
   async findByMessageReference(messageReference) { return this.trusted.get(messageReference) ?? null; }
   async hasRefundReference(refundReference) { return [...this.trusted.values()].includes(refundReference); }
   async findClaimByMessageReference(messageReference) { return this.claims.find((claim) => claim.messageReference === messageReference) ?? null; }
-  async storeClaimWithInitialCheckAndSchedule(record) { this.contractVersions.push(record.contractVersion); this.claims.push(record.claim); this.authoritativeChecks.push(record.authoritativeCheck); this.schedules.push(...record.schedule); }
+  async storeClaimWithInitialCheckAndSchedule(record) {
+    this.contractVersions.push(record.contractVersion);
+    this.claims.push(record.claim);
+    this.authoritativeChecks.push(record.authoritativeCheck);
+    this.verdictHistory.push({ claimId: record.claim.id, verdict: record.claim.verdict, recordedAt: record.claim.lastCheckedAt, trigger: "INITIAL" });
+    this.schedules.push(...record.schedule);
+  }
   async findClaimByRefundReference(refundReference) { return this.claims.find((claim) => claim.refundReference === refundReference) ?? null; }
   async recordTriggeredVerification({ claim, checkedAt, refundState, verdict, monitoringEndsAt }) {
     this.authoritativeChecks.push({ claimId: claim.id, checkedAt, refundState, trigger: "LEDGER_CHANGE" });
@@ -154,4 +201,34 @@ class InMemoryReceiptStore {
     }
     if (changed) this.verdictHistory.push({ claimId: claim.id, verdict, recordedAt: checkedAt, trigger: "LEDGER_CHANGE" });
   }
+  async findDueSchedule(now) {
+    return this.schedules
+      .filter((schedule) => schedule.completedAt === undefined && schedule.claimedAt === undefined && new Date(schedule.dueAt) <= now)
+      .map((schedule) => ({
+        ...schedule,
+        scheduleId: this.schedules.indexOf(schedule) + 1,
+        refundReference: this.claims.find((claim) => claim.id === schedule.claimId).refundReference,
+        completionDeadlineAt: this.claims.find((claim) => claim.id === schedule.claimId).completionDeadlineAt,
+        currentVerdict: this.claims.find((claim) => claim.id === schedule.claimId).verdict,
+      }));
+  }
+  async claimDueSchedule(scheduleId, claimedAt) {
+    const schedule = this.schedules[scheduleId - 1];
+    if (schedule.claimedAt !== undefined || schedule.completedAt !== undefined) return false;
+    schedule.claimedAt = claimedAt;
+    return true;
+  }
+  async recordVerificationOutcome({ scheduleId, claimId, checkedAt, refundState, kind, currentVerdict, verdict }) {
+    const claim = this.claims.find((candidate) => candidate.id === claimId);
+    this.authoritativeChecks.push({ claimId, checkedAt, refundState, trigger: kind });
+    claim.verdict = verdict;
+    claim.lastCheckedAt = checkedAt;
+    if (verdict === "FALSE_SUCCESS") {
+      claim.firstConclusiveVerdict ??= "FALSE_SUCCESS";
+      claim.firstConclusiveAt ??= checkedAt;
+    }
+    if (verdict !== currentVerdict) this.verdictHistory.push({ claimId, verdict, recordedAt: checkedAt, trigger: kind });
+    this.schedules[scheduleId - 1].completedAt = checkedAt;
+  }
+  async recordInconclusive() { throw new Error("Unexpected failed authoritative read"); }
 }

@@ -72,11 +72,16 @@ export function createVerifier({ clock, receipt, ledger }) {
 
 function toProofCard(claim) {
   const proven = claim.verdict === "PROVEN";
+  const falseSuccess = claim.verdict === "FALSE_SUCCESS";
   return {
     claimType: "refund_completed",
     verdict: claim.verdict,
-    reason: proven ? "The Payment Ledger records the refund as completed." : "The refund is still processing and the Completion Deadline is open.",
-    customerGuidance: proven ? "No action is needed." : "Wait for an automatic update.",
+    reason: proven
+      ? "The Payment Ledger records the refund as completed."
+      : falseSuccess
+        ? "The Payment Ledger did not record the refund as completed by the Completion Deadline."
+        : "The refund is still processing and the Completion Deadline is open.",
+    customerGuidance: proven ? "No action is needed." : falseSuccess ? "Do not retry. Contact support." : "Wait for an automatic update.",
     completionDeadlineAt: claim.completionDeadlineAt,
     lastCheckedAt: claim.lastCheckedAt,
     ...(claim.firstProvenAt == null ? {} : { firstProvenAt: claim.firstProvenAt }),
