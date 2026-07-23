@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   createNeonLedgerReader,
+  createNeonLedgerWriter,
   createNeonReceiptStore,
 } from "../src/neon-repositories.mjs";
 
@@ -22,6 +23,22 @@ test("the Verifier's ledger adapter only performs a parameterized read", async (
       values: ["refund-ref-1"],
     },
   ]);
+});
+
+test("the Refund Service writer changes a ledger row only through a legal transition", async () => {
+  const calls = [];
+  const ledger = createNeonLedgerWriter({
+    async query(sql, values) {
+      calls.push({ sql, values });
+      return { rows: [{ state: "SUCCEEDED" }] };
+    },
+  });
+
+  assert.equal(await ledger.transitionRefund("refund-ref-1", "SUCCEEDED"), true);
+  assert.match(calls[0].sql, /INSERT INTO ledger\.refunds/);
+  assert.match(calls[0].sql, /state = \$2/);
+  assert.deepEqual(calls[0].values, ["refund-ref-1", "SUCCEEDED"]);
+  await assert.rejects(() => ledger.transitionRefund("refund-ref-1", "MISSING"), /Refund State/);
 });
 
 test("the Receipt adapter stores the Claim and its initial durable work together", async () => {

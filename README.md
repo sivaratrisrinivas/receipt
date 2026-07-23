@@ -38,6 +38,12 @@ Contract, every authoritative check, its Verdict History, and durable
 verification work in Neon. The scheduler resumes uncompleted work after a
 restart.
 
+The separately bound Refund Service listens on `REFUND_SERVICE_PORT` (default
+`3001`). `POST /refunds/complete` accepts the trusted Refund Reference and
+uses the Ledger writer role to move a refund through its legal states. Every
+actual state change causes Receipt to perform a new independent Ledger read;
+the service response itself never proves a Claim.
+
 The project is deliberately still small. Its product goals, planned Evidence
 View, SigNoz dashboard, and later Claim Types are described in
 [PRODUCT.md](PRODUCT.md). The terminal prototype under `prototypes/` is prior

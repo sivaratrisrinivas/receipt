@@ -7,7 +7,7 @@ const COMPLETED_STATEMENTS = new Set([
 ]);
 
 export function createSupportWorkflow({ trustedReferences, verifier }) {
-  return { createRefundReference, submitRecognizedClaim };
+  return { createRefundReference, submitRecognizedClaim, getProofCard, hasTrustedRefundReference };
 
   async function createRefundReference({ messageReference }) {
     assertMessageReference(messageReference);
@@ -29,6 +29,17 @@ export function createSupportWorkflow({ trustedReferences, verifier }) {
       messageReference,
       refundReference,
     });
+  }
+
+  async function getProofCard({ messageReference }) {
+    assertMessageReference(messageReference);
+    const claim = await verifier.findRecognizedClaim({ messageReference });
+    if (claim === null) throw new Error("No recognized Claim exists for this Message Reference.");
+    return verifier.toProofCard(claim);
+  }
+
+  function hasTrustedRefundReference({ refundReference }) {
+    return trustedReferences.hasRefundReference(refundReference);
   }
 }
 
